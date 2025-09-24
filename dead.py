@@ -1,82 +1,53 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 
-# --- Load Multiple Excel Files ---
-files = ["blue pearl deadstock1.xlsx", "blue pearl deadstock2.xlsx", "blue pearl deadstock3.xlsx"]  # update file names
-dfs = [pd.read_excel(f) for f in files]
-df = pd.concat(dfs, ignore_index=True)
+st.set_page_config(page_title="Low Margin Item Analysis", layout="wide")
 
-# --- Clean column names ---
-df.columns = df.columns.str.strip()
+# --- File path (uploaded file) ---
+file_path = "oud mehta sales.Xlsx"  # change if different
 
-# --- Ensure numeric fields ---
-for col in ["Stock Value", "Stock", "Profit", "Margin%", "Total Sales", "Cost", "Selling", "LP Price"]:
-    if col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+# --- Load Excel with no header first ---
+df_raw = pd.read_excel(file_path, header=None)
 
-# --- Handle negative stock for plotting ---
-df["Stock_clean"] = df["Stock"].clip(lower=0)
+# Find header row dynamically (search for "Item Code")
+header_row = df_raw[df_raw.apply(lambda row: row.astype(str).str.contains("Item Code", case=False).any(), axis=1)].index[0]
 
-# --- Dashboard Layout ---
-st.set_page_config(page_title="Dead Stock Dashboard", layout="wide")
-st.title("📊Blue Pearl Stock(Zero Sales and LP before 2025)")
+# Reload with correct header row
+df = pd.read_excel(file_path, header=header_row)
 
-# --- KPIs at Top ---
-col1, col2, col3, col4, col5 = st.columns(5)
-col1.metric("Total Dead Stock Items", f"{len(df):,}")
-col2.metric("Total Stock Qty", f"{df['Stock'].sum():,.0f}")
-col3.metric("Total Stock Value", f"{df['Stock Value'].sum():,.2f}")
+# --- Ensure required columns exist ---
+required_cols = ["Item Code", "Items", "Qty Sold", "Total Cost", "Total Sales", "Total Profit", "Excise Margin (%)"]
 
-# --- High Priority Items (Top 10 by Stock Value) ---
-st.subheader("🚨 High Priority Items (Top 10 by Stock Value)")
-high_priority = df.nlargest(10, "Stock Value")
-priority_cols = [c for c in ["Item Bar Code","Item Name","Stock","Stock Value","Margin%","Profit",
-                             "Cost","Selling","LP Price","LP Date","LP Supplier"] if c in df.columns]
-st.table(high_priority[priority_cols])  # removed gradient to avoid matplotlib dependency
+missing = [col for col in required_cols if col not in df.columns]
+if missing:
+    st.error(f"❌ Missing columns: {missing}")
+    st.stop()
 
-# --- Top Items by Stock Value (Horizontal Bar Chart) ---
-st.subheader("Top 20 Items by Stock Value")
-top_items = df.nlargest(20, "Stock Value")
-fig1 = px.bar(
-    top_items, y="Item Name", x="Stock Value", orientation="h",
-    text="Stock Value", color="Stock Value", color_continuous_scale="Reds",
-    hover_data={
-        "Item Bar Code": True,
-        "Item Name": True,
-        "Stock": True,
-        "Stock Value": True,
-        "Margin%": True,
-        "Profit": True,
-        "Cost": True,
-        "Selling": True,
-        "LP Price": True
-    }
-)
-fig1.update_layout(yaxis={'categoryorder':'total ascending'})
-st.plotly_chart(fig1, use_container_width=True)
+# --- Convert to numeric where possible ---
+for col in ["Qty Sold", "Total Cost", "Total Sales", "Total Profit", "Excise Margin (%)"]:
+    df[col] = pd.to_numeric(df[col], errors="coerce")
 
-# --- Pie Chart: Category-wise Stock Value ---
-st.subheader("Stock Value by Category")
-if "Category" in df.columns:
-    category_df = df.groupby("Category")["Stock Value"].sum().reset_index()
-    fig2 = px.pie(
-        category_df, values="Stock Value", names="Category",
-        hover_data={"Stock Value": True},
-        color_discrete_sequence=px.colors.sequential.Reds
-    )
-    fig2.update_traces(textinfo="percent+label")
-    st.plotly_chart(fig2, use_container_width=True)
+# --- Filter low margin items ---
+low_margin = df[df["Excise Margin (%)"] < 5].copy()
 
+# --- Simulate price increases (3% and 4%) ---
+for inc in [0.03, 0.04]:
+    low_margin[f"Profit +{int(inc*100)}% Price"] = low_margin["Total Profit"] + (low_margin["Total Sales"] * inc)
+    low_margin[f"Change in Profit +{int(inc*100)}%"] = low_margin[f"Profit +{int(inc*100)}% Price"] - low_margin["Total Profit"]
 
+st.subheader("📉 Items with < 5% Margin")
+st.dataframe(low_margin[[
+    "Item Code", "Items", "Qty Sold", "Total Cost", "Total Sales", "Total Profit", "Excise Margin (%)", 
+    "Profit +3% Price", "Change in Profit +3%", 
+    "Profit +4% Price", "Change in Profit +4%"
+]])
 
-# --- Detailed Data Table (Full Details) ---
-st.subheader("Detailed Dead Stock Items (Full Details)")
-detailed_cols = [c for c in ["Item Bar Code","Item Name","Item No","Stock","Stock Value","Margin%","Profit",
-                             "Cost","Selling","LP Price","LP Date","LP Supplier","CF","Unit","Category","Pre Return"] 
-                 if c in df.columns]
-st.dataframe(df[detailed_cols])
+# --- Insights ---
+total_current_profit = low_margin["Total Profit"].sum()
+total_profit_3 = low_margin["Profit +3% Price"].sum()
+total_profit_4 = low_margin["Profit +4% Price"].sum()
 
-# --- Download Option ---
-csv = df[detailed_cols].to_csv(index=False).encode('utf-8')
-st.download_button("📥 Download Full Dead Stock Data", csv, "dead_stock_full.csv", "text/csv")
+st.subheader("📊 Insights")
+st.write(f"👉 Current Profit from low margin items: **{total_current_profit:,.2f}**")
+st.write(f"👉 Profit if price increased by 3%: **{total_profit_3:,.2f}** (Change: {total_profit_3-total_current_profit:,.2f})")
+st.write(f"👉 Profit if price increased by 4%: **{total_profit_4:,.2f}** (Change: {total_profit_4-total_current_profit:,.2f})")
